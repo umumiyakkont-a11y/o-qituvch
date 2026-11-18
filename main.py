@@ -19,7 +19,8 @@ from aiogram.types import (
 )
 
 # Render'da Environment Variables orqali o'qiladi
-TOKEN = os.getenv("BOT_TOKEN")
+# Agar Render'ga kiritmasangiz, standart ravishda o'zingizning ID raqamingizni oladi
+TOKEN = os.getenv("BOT_TOKEN", "SIZNING_BOT_TOKENINGIZNI_SHU_YERGA_YOZING")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "8371392099"))
 
 logging.basicConfig(level=logging.INFO)
@@ -28,7 +29,7 @@ dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
 
-# --- BAZA BILAN ISHLASH ---
+# ==================== BAZA BILAN ISHLASH ====================
 def init_db():
     conn = sqlite3.connect("kitobxon.db")
     cursor = conn.cursor()
@@ -55,9 +56,8 @@ def init_db():
     conn.commit()
     conn.close()
 
-init_db()
 
-# --- FSM (STATE) HOLATLAR ---
+# ==================== FSM (STATE) HOLATLAR ====================
 class RegState(StatesGroup):
     waiting_for_name = State()
     waiting_for_phone = State()
@@ -77,7 +77,8 @@ class ChannelState(StatesGroup):
 class DeleteUserState(StatesGroup):
     waiting_for_id = State()
 
-# --- YORDAMCHI FUNKSIYALAR ---
+
+# ==================== YORDAMCHI FUNKSIYALAR ====================
 def get_user(user_id):
     conn = sqlite3.connect("kitobxon.db")
     cursor = conn.cursor()
@@ -110,6 +111,7 @@ def sub_keyboard(channels):
     keyboard.append([InlineKeyboardButton(text="✅ A'zo bo'ldim", callback_data="check_sub")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+# Admin pastki (Reply) tugmalari
 admin_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📢 E'lon yuborish")],
@@ -120,15 +122,18 @@ admin_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# --- /START VA MAJBURIY OBUNA ---
+
+# ==================== /START VA MAJBURIY OBUNA ====================
 @router.message(F.text == "/start")
 async def cmd_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
 
+    # Agar admin bo'lsa va /start bossa admin menyuni chiqarish
     if user_id == ADMIN_ID:
         await message.answer("👑 Admin paneliga xush kelibsiz:", reply_markup=admin_keyboard)
         return
 
+    # Majburiy obunani tekshirish
     unsub = await check_subscriptions(user_id)
     if unsub:
         await message.answer(
@@ -138,7 +143,7 @@ async def cmd_start(message: Message, state: FSMContext):
         return
 
     user = get_user(user_id)
-    if user and user[4] == 1:
+    if user and user[4] == 1:  # Ro'yxatdan o'tgan bo'lsa
         kb = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="✏️ Ma'lumotlarni tahrirlash", callback_data="edit_info")]]
         )
@@ -160,7 +165,8 @@ async def verify_subscription(callback: CallbackQuery, state: FSMContext):
         await callback.message.delete()
         await cmd_start(callback.message, state)
 
-# --- RO'YXATDAN O'TISH ---
+
+# ==================== RO'YXATDAN O'TISH JARAYONI ====================
 @router.message(RegState.waiting_for_name)
 async def process_name(message: Message, state: FSMContext):
     await state.update_data(fullname=message.text)
@@ -173,6 +179,7 @@ async def process_phone(message: Message, state: FSMContext):
     if not phone.replace("+", "").isdigit():
         await message.answer("❌ Xato! Telefon raqam faqat raqamlardan iborat bo'lishi kerak. Qaytadan kiriting:")
         return
+
     await state.update_data(phone=phone)
     await state.set_state(RegState.waiting_for_school)
     await message.answer("Qaysi maktabda o'qiysiz? (Faqat maktab raqamini kiriting, masalan: 14):")
@@ -183,6 +190,7 @@ async def process_school(message: Message, state: FSMContext):
     if not school.isdigit():
         await message.answer("❌ Xato! Maktab raqamini faqat sonlarda kiriting (masalan: 14):")
         return
+
     await state.update_data(school=school)
     await state.set_state(RegState.waiting_for_grade)
     await message.answer("Nechanchi sinfda o'qiysiz? (Faqat sinf raqamini kiriting, masalan: 8):")
@@ -215,7 +223,8 @@ async def process_grade(message: Message, state: FSMContext):
     )
     await message.answer("✅ Tabriklaymiz! Siz tanlovga muvaffaqiyatli ro'yxatdan o'tdingiz.", reply_markup=kb)
 
-# --- TAHRIRLASH ---
+
+# ==================== TAHRIRLASH QISMI ====================
 @router.callback_query(F.data == "edit_info")
 async def edit_menu(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(
@@ -242,7 +251,11 @@ async def edit_field_start(callback: CallbackQuery, state: FSMContext):
     field = callback.data.split("_")[1]
     await state.update_data(field_to_edit=field)
     await state.set_state(EditState.new_value)
-    await callback.message.answer(f"Yangi {field}ni kiriting:")
+    
+    if field in ["phone", "school", "grade"]:
+        await callback.message.answer(f"Yangi {field}ni kiriting (Faqat raqam bo'lishi kerak):")
+    else:
+        await callback.message.answer(f"Yangi {field}ni kiriting:")
 
 @router.message(EditState.new_value)
 async def save_new_value(message: Message, state: FSMContext):
@@ -252,13 +265,18 @@ async def save_new_value(message: Message, state: FSMContext):
     val = message.text.strip()
 
     if field == "phone" and not val.replace("+", "").isdigit():
-        await message.answer("❌ Xato! Telefon raqam faqat raqamlardan iborat bo'lsin:")
+        await message.answer("❌ Xato! Telefon raqam faqat raqamlardan iborat bo'lishi kerak. Qaytadan kiriting:")
         return
     elif field in ["school", "grade"] and not val.isdigit():
-        await message.answer("❌ Xato! Bu maydon faqat sonlardan iborat bo'lsin:")
+        await message.answer("❌ Xato! Bu maydon faqat sonlardan iborat bo'lishi kerak. Qaytadan kiriting:")
         return
 
-    mapping = {"fullname": "fullname", "phone": "phone", "school": "school", "grade": "grade"}
+    mapping = {
+        "fullname": "fullname",
+        "phone": "phone",
+        "school": "school",
+        "grade": "grade",
+    }
     db_field = mapping.get(field)
 
     conn = sqlite3.connect("kitobxon.db")
@@ -268,21 +286,23 @@ async def save_new_value(message: Message, state: FSMContext):
     conn.close()
 
     await state.clear()
-    await message.answer("✅ Ma'lumotlaringiz yangilandi! /start ni bosing.")
+    await message.answer("✅ Ma'lumotlaringiz muvaffaqiyatli yangilandi! /start ni bosing.")
 
-# --- ADMIN PANEL ---
+
+# ==================== ADMIN PANEL BOSHQARUVI ====================
 @router.message(F.text == "/admin")
 async def cmd_admin(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
     await message.answer("👑 Admin paneliga xush kelibsiz:", reply_markup=admin_keyboard)
 
+# 1. E'lon yuborish
 @router.message(F.text == "📢 E'lon yuborish")
 async def adm_broadcast(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     await state.set_state(BroadcastState.waiting_for_text)
-    await message.answer("Yuboriladigan xabar matnini kiriting:", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Barcha foydalanuvchilarga yuborilishi kerak bo'lgan xabar matnini kiriting:", reply_markup=ReplyKeyboardRemove())
 
 @router.message(BroadcastState.waiting_for_text)
 async def send_broadcast(message: Message, state: FSMContext):
@@ -301,8 +321,9 @@ async def send_broadcast(message: Message, state: FSMContext):
             await asyncio.sleep(0.05)
         except Exception:
             pass
-    await message.answer(f"✅ E'lon {count} ta foydalanuvchiga yuborildi!", reply_markup=admin_keyboard)
+    await message.answer(f"✅ E'lon {count} ta foydalanuvchiga muvaffaqiyatli yuborildi!", reply_markup=admin_keyboard)
 
+# 2. Ishtirokchilar ro'yxati
 @router.message(F.text == "📋 Ishtirokchilar ro'yxati")
 async def adm_list(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -326,12 +347,13 @@ async def adm_list(message: Message):
     if text:
         await message.answer(text, parse_mode="Markdown", reply_markup=admin_keyboard)
 
+# 3. Ro'yxatdan o'chirish
 @router.message(F.text == "❌ Ro'yxatdan o'chirish")
 async def adm_delete(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     await state.set_state(DeleteUserState.waiting_for_id)
-    await message.answer("O'chirilishi kerak bo'lgan foydalanuvchi **Telegram ID** raqamini kiriting:", reply_markup=ReplyKeyboardRemove())
+    await message.answer("O'chirmoqchi bo'lgan foydalanuvchining **Telegram ID** raqamini kiriting:", reply_markup=ReplyKeyboardRemove())
 
 @router.message(DeleteUserState.waiting_for_id)
 async def process_delete_user(message: Message, state: FSMContext):
@@ -345,14 +367,15 @@ async def process_delete_user(message: Message, state: FSMContext):
         conn.close()
         
         try:
-            await bot.send_message(target_id, "⚠️ Siz admin tomonidan tanlov ro'yxatidan o'chirildingiz.")
+            await bot.send_message(target_id, "⚠️ Siz admin tomonidan tanlov ro'yxatidan o'chirildingiz. Qaytadan ro'yxatdan o'tish uchun /start ni bosing.")
         except Exception:
             pass
 
-        await message.answer(f"✅ ID {target_id} o'chirildi.", reply_markup=admin_keyboard)
+        await message.answer(f"✅ ID {target_id} egasi ro'yxatdan muvaffaqiyatli o'chirildi.", reply_markup=admin_keyboard)
     except ValueError:
-        await message.answer("❌ Noto'g'ri ID.", reply_markup=admin_keyboard)
+        await message.answer("❌ Noto'g'ri ID kiritildi. Faqat raqam kiriting.", reply_markup=admin_keyboard)
 
+# 4. Majburiy obuna kanali
 @router.message(F.text == "➕ Majburiy obuna kanali")
 async def adm_channel(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -370,7 +393,7 @@ async def adm_channel(message: Message):
             [InlineKeyboardButton(text="🗑 Kanalni o'chirish", callback_data="del_ch")],
         ]
     )
-    await message.answer(f"📢 Hozirgi kanallar:\n{ch_list}", reply_markup=kb)
+    await message.answer(f"📢 Hozirgi majburiy kanallar:\n{ch_list}\n\nAmalni tanlang:", reply_markup=kb)
 
 @router.callback_query(F.data == "add_ch")
 async def add_channel_start(callback: CallbackQuery, state: FSMContext):
@@ -380,14 +403,14 @@ async def add_channel_start(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "del_ch")
 async def delete_channel_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ChannelState.waiting_for_channel)
-    await callback.message.answer("O'chirmoqchi bo'lgan kanal username'ini yuboring:")
+    await callback.message.answer("O'chirmoqchi bo'lgan kanal username'ini yuboring (masalan: `@kanal_nomi`):")
 
 @router.message(ChannelState.waiting_for_channel)
 async def save_or_remove_channel(message: Message, state: FSMContext):
     ch = message.text.strip()
     conn = sqlite3.connect("kitobxon.db")
     cursor = conn.cursor()
-    # Tekshiramiz: bu kanal bazada bormi yoki yo'q, shunga qarab qo'shamiz yoki o'chiramiz
+    
     cursor.execute("SELECT channel_username FROM channels WHERE channel_username = ?", (ch,))
     exists = cursor.fetchone()
     
@@ -399,28 +422,34 @@ async def save_or_remove_channel(message: Message, state: FSMContext):
         cursor.execute("INSERT OR IGNORE INTO channels (channel_username) VALUES (?)", (ch,))
         conn.commit()
         msg = f"✅ {ch} majburiy obunaga qo'shildi!"
-    conn.close()
     
+    conn.close()
     await state.clear()
     await message.answer(msg, reply_markup=admin_keyboard)
 
 
-# --- RENDER WEB SERVICE UCHUN AIOHTTP SERVER ---
-async def handle(request):
-    return web.Response(text="Bot is running!")
+# ==================== RENDER WEB SERVER (LIVE HOLAT) ====================
+async def health_check(request):
+    return web.Response(text="Ro'yxat Bot is Live and Running on Render!")
 
-async def web_server():
+async def start_web_server():
     app = web.Application()
-    app.router.add_get("/", handle)
+    app.router.add_get("/", health_check)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
+    
+    # Render avtomatik ajratadigan PORT ni olamiz
+    port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
+    print(f"Web server {port}-portda ishga tushdi (Render Live holatda)...")
 
 async def main():
-    # Veb-serverni hamda bot pollingni bir vaqtda ishga tushiramiz
-    await web_server()
+    init_db()
+    # Web serverni ishga tushiramiz
+    await start_web_server()
+    # Bot pollingini boshlaymiz
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
